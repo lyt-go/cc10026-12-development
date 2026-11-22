@@ -255,6 +255,35 @@ def list_exports() -> list[dict[str, Any]]:
     return records
 
 
+# ========== 归并字段来源表与更正回执 ==========
+
+
+def write_field_source_table(table_data: dict[str, Any]) -> None:
+    """归并字段来源表写入共享目录，供结果格式化和更正复核消费。"""
+    table_data["_updated_at"] = _now_iso()
+    _write_json(DATA_ROOT / "data_merge" / "field_sources.json", table_data)
+
+
+def read_field_source_table() -> dict[str, Any]:
+    """读取最近一次的归并字段来源表。"""
+    return _read_json(DATA_ROOT / "data_merge" / "field_sources.json", {})
+
+
+def append_correction(record: dict[str, Any]) -> None:
+    """追加或更新一条更正申请/回执，保留原值和原文件身份供复核追溯。"""
+    records = _read_json(DATA_ROOT / "data_merge" / "corrections.json", [])
+    records = [r for r in records
+               if r.get("correction_id") != record.get("correction_id")]
+    record["_updated_at"] = _now_iso()
+    records.append(record)
+    _write_json(DATA_ROOT / "data_merge" / "corrections.json", records)
+
+
+def list_corrections() -> list[dict[str, Any]]:
+    """列出全部更正申请与回执。"""
+    return _read_json(DATA_ROOT / "data_merge" / "corrections.json", [])
+
+
 # ========== 模块数据快照 ==========
 
 

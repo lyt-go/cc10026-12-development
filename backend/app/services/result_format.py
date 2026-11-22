@@ -4,6 +4,7 @@
 - 消费 api_registry 快照 → 关联API自动选择格式模板
 - 消费 data_filter 快照 → 过滤后数据按模板格式化
 - 消费 field_mask 快照 → 脱敏后数据按模板输出
+- 消费 data_merge 归并字段来源表 → 输出别名连回实际输入
 - 被 export_task 消费 → 格式化结果写入导出文件
 """
 from __future__ import annotations
@@ -60,6 +61,67 @@ class ResultFormatService(BaseModuleService):
         elif output_format == "nested":
             return {"nested": True, "total": len(data_rows), "items": data_rows}
         return data_rows
+
+    def format_with_lineage(self, api_name: str, merged: dict[str, Any]) -> dict[str, Any]:
+        """按模板格式化归并结果，并用归并字段来源表把输出别名连回实际输入。
+
+        表头使用模板别名；每列输出字段凭据（生效来源+全部候选，含原文件
+        身份），每行每列输出单元格凭据（来源行键和取值），确认后的更正
+        操作能从表头一路查到要改的原字段和行。
+        """
+        template = None
+        for row in store.rows(self.MODULE):
+            if row.get("关联API") == api_name and row.get("status") == "已生效":
+                template = row
+                break
+
+        field_mapping = template.get("字段映射", "") if template else ""
+        if not field_mapping:
+            # 无模板时按原字段名直出，来源表同样逐列生成
+            fields: list[str] = []
+            for merged_row in merged.get("rows", []):
+                for field in merged_row:
+                    if field not in fields:
+                        fields.append(field)
+            field_mapping = ",".join(f"{field}:{field}" for field in fields)
+
+        from app.services import service_for
+        merge_svc = service_for("data_merge")
+        table = merge_svc.build_field_source_table(merged, field_mapping)
+        columns = {column["alias"]: column for column in table}
+        headers = [column["alias"] for column in table]
+
+        rows_out = []
+        cell_credentials: dict[str, dict[str, Any]] = {}
+        cell_sources = merged.get("cell_sources", {})
+        for merged_row, row_key in zip(merged.get("rows", []), merged.get("row_keys", [])):
+            out_row = {}
+            row_credentials = {}
+            row_cells = cell_sources.get(str(row_key), {})
+            for alias in headers:
+                column = columns[alias]
+                source_field = column.get("source_field")
+                value = merged_row.get(source_field, "") if source_field else ""
+                out_row[alias] = value
+                cell = row_cells.get(source_field, {}) if source_field else {}
+                row_credentials[alias] = {
+                    "source_file": column.get("source_file"),
+                    "source_field": source_field,
+                    "source_row_key": cell.get("source_row_key", str(row_key)),
+                    "value": value,
+                }
+            rows_out.append(out_row)
+            cell_credentials[str(row_key)] = row_credentials
+
+        return {
+            "api_name": api_name,
+            "template_no": template.get("模板编号") if template else None,
+            "headers": headers,
+            "rows": rows_out,
+            "field_source_table": table,
+            "field_credentials": columns,
+            "cell_credentials": cell_credentials,
+        }
 
     def _to_csv(self, data_rows: list[dict[str, Any]]) -> str:
         if not data_rows:
